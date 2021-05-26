@@ -1,0 +1,26 @@
+
+[package]
+name = "solana_escrow"
+version = "0.0.1"
+description = "Example template program written in Rust"
+authors = ["A.Huy"]
+license = "Apache-2.0"
+edition = "2018"
+
+[features]
+no-entrypoint = []
+
+[dependencies]
+arrayref = "0.3.6"
+borsh = "0.7.1"
+#borsh-derive = "0.8.1"
+solana-program = "=1.6.9"
+thiserror = "1.0.24"
+spl-token = {version = "3.1.1", features = ["no-entrypoint"]}
+
+[dev-dependencies]
+#solana-program-test = "=1.6.6"
+solana-sdk = "=1.6.9"
+
+[lib]
+crate-type = ["cdylib", "lib"]
