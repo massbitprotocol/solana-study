@@ -2,13 +2,19 @@
 
 // use error_chain::error_chain;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 //use std::env;
 use reqwest::Client;
+use reqwest::Response;
 use std::error::Error;
 //use tokio_postgres::{NoTls};
 use std::process::Command;
 use regex::Regex;
+use tokio_postgres::{NoTls};
+use indexer::{establish_connection, create_record};
+use diesel::PgConnection;
+
+
 
 type TypeTimeStamp = u128;
 type TypeBlockSlot = u128;
@@ -18,6 +24,7 @@ type TypeInnerInstructions = String;
 type TypeTransactionStatusOk = String;
 type TypeAccountPublicAddress = String;
 
+// Response of getBlock RPC
 #[derive(Deserialize, Debug)]
 struct BlockResponse {
     id: u64,
@@ -70,6 +77,14 @@ struct TransactionStatus {
 }
 
 
+async fn call_rpc(uri: &str, gist_body: &Value)->Result<Response, Box<dyn Error>> {
+    let response = Client::new()
+        .post(uri)
+        .json(gist_body)
+        .send().await?;
+
+    Ok(response)
+}
 
 async fn get_block()->Result<Vec<BlockResponse>, Box<dyn Error>>{
 
@@ -78,7 +93,9 @@ async fn get_block()->Result<Vec<BlockResponse>, Box<dyn Error>>{
 
     // Hard-code the latest block number here
     let start_block = 58538963;
-    let block_number = 1;
+    let block_number = 10;
+
+    // Get block_number blocks from start_block
     for i in start_block..(start_block+block_number) {
         let gist_body = json!({
             "jsonrpc": "2.0",
@@ -89,12 +106,13 @@ async fn get_block()->Result<Vec<BlockResponse>, Box<dyn Error>>{
 
         let request_url = uri;
 
-        let response = Client::new()
-            .post(request_url)
-            .json(&gist_body)
-            .send().await?;
+        // Call RPC
+        let response = call_rpc(uri,&gist_body).await?;
 
+        // Parse the response
         let response: BlockResponse = response.json().await?;
+
+        // Push response to array of responses
         responses.push(response);
     }
     Ok(responses)
@@ -147,28 +165,56 @@ fn get_accounts_from_encoded_transaction(encoded_transaction: &String, base_mode
 
 }
 
+fn store_time_transaction(connection: &PgConnection, block_number: u128, timestamp: TypeTimeStamp,transaction_number:u128){
+    let post = create_record(connection, block_number, timestamp, transaction_number);
+    println!("\nSaved record timestamp {} with transaction number {}", post.timestamp, post.transaction_number);
+}
+
+fn get_accounts_in_block(br: BlockResponse) -> Vec<Vec<TypeAccountPublicAddress>>{
+    let transactions = br.result.transactions;
+
+    let mut accounts_in_block = Vec::new();
+
+    // Each transaction
+    for transaction in transactions{
+        // Get encoded transaction and base mode
+        let encoded_transaction = &transaction.transaction[0];
+        let base_mode = &transaction.transaction[1];
+
+        // Get accounts for each transaction
+        let accounts = get_accounts_from_encoded_transaction(encoded_transaction,base_mode);
+        print!("{:?}\n",&accounts);
+        accounts_in_block.push(accounts);
+    }
+    accounts_in_block
+}
+
+fn store_into_time_transaction(connection: &PgConnection, responses: Vec<BlockResponse>){
+    for response in responses {
+        let transaction_number = response.result.transactions.len();
+        let timestamp = response.result.blockTime;
+        let block_number = response.result.parentSlot + 1;
+        store_time_transaction(connection,block_number, timestamp,transaction_number as u128);
+    }
+
+}
 
 #[tokio::main]
 async fn main() ->  Result<(), Box<dyn Error>> {
+    // Connect to DB
+    let connection = establish_connection();
 
     // Get block data
     let responses = get_block().await?;
 
     // Get address from block data
-    for response in responses {
-        //print!("{:?}\n",response.result.transactions);
-        let transactions = response.result.transactions;
+    // Todo: use these accounts infos
+    // for response in responses {
+    //     //print!("{:?}\n",response.result.transactions);
+    //     let accounts_in_block = get_accounts_in_block(br: BlockResponse);
+    // }
+    print!("{:?}",responses);
+    store_into_time_transaction(&connection, responses);
 
-        // Each transaction
-        for transaction in transactions{
-            // Get encoded transaction and base mode
-            let encoded_transaction = &transaction.transaction[0];
-            let base_mode = &transaction.transaction[1];
-
-            // Get accounts
-            let accounts = get_accounts_from_encoded_transaction(encoded_transaction,base_mode);
-            print!("{:?}\n",&accounts);
-        }
-    }
     Ok(())
 }
