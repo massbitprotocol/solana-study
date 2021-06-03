@@ -11,6 +11,9 @@ Cargo.lock
 
 .idea/
 
+#Temp file
+indexer/block_response.json
+
 .vscode/
 
 data/
