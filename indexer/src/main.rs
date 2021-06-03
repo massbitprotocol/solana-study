@@ -10,19 +10,22 @@ use std::error::Error;
 //use tokio_postgres::{NoTls};
 use std::process::Command;
 use regex::Regex;
-use tokio_postgres::{NoTls};
+//use tokio_postgres::{NoTls};
 use indexer::{establish_connection, create_record};
 use diesel::PgConnection;
-
 
 
 type TypeTimeStamp = u128;
 type TypeBlockSlot = u128;
 type TypeTokenUnit = u128;
 type TypeBlockHash = String;
-type TypeInnerInstructions = String;
 type TypeTransactionStatusOk = String;
 type TypeAccountPublicAddress = String;
+type TypeInnerInstructions = serde_json::Value;
+type TypeErr = Option<serde_json::Value>;
+type TypePostTokenBalances = serde_json::Value;
+type TypePreTokenBalances = serde_json::Value;
+
 
 // Response of getBlock RPC
 #[derive(Deserialize, Debug)]
@@ -59,14 +62,14 @@ struct BlockTransaction {
 
 #[derive(Deserialize, Debug)]
 struct TransactionMeta {
-    err: Option<String>,
+    err: TypeErr,
     fee: TypeTokenUnit,
     innerInstructions: Vec<TypeInnerInstructions>,
     logMessages: Vec<String>,
     postBalances: Vec<TypeTokenUnit>,
-    postTokenBalances: Vec<TypeTokenUnit>,
+    postTokenBalances: TypePostTokenBalances,
     preBalances: Vec<TypeTokenUnit>,
-    preTokenBalances: Vec<TypeTokenUnit>,
+    preTokenBalances: TypePreTokenBalances,
     status: TransactionStatus,
 
 }
@@ -76,27 +79,57 @@ struct TransactionStatus {
     Ok: Option<TypeTransactionStatusOk>
 }
 
+#[derive(Deserialize, Debug)]
+struct EpochInfoResponse {
+    jsonrpc: String,
+    result: EpochInfo,
+    id: u64
+}
 
-async fn call_rpc(uri: &str, gist_body: &Value)->Result<Response, Box<dyn Error>> {
+#[derive(Deserialize, Debug)]
+struct EpochInfo {
+    absoluteSlot: u64,
+    blockHeight: u64,
+    epoch: u64,
+    slotIndex: u64,
+    slotsInEpoch: u64,
+    transactionCount: u64
+}
+
+async fn call_rpc(gist_body: &Value)->Result<Response, Box<dyn Error>> {
+    let uri = "https://api.devnet.solana.com/";
     let response = Client::new()
         .post(uri)
         .json(gist_body)
         .send().await?;
-
     Ok(response)
 }
 
-async fn get_block()->Result<Vec<BlockResponse>, Box<dyn Error>>{
 
-    let uri = "https://api.devnet.solana.com/";
+// Get the info of current epoch
+async fn get_current_epoch_info()->Result<EpochInfoResponse, Box<dyn Error>>{
+    let gist_body = json!({
+            "jsonrpc": "2.0",
+            "method": "getEpochInfo",
+            "id": 1
+            });
+    let response = call_rpc(&gist_body).await?;
+
+    //println!("response: {:?}",response);
+    let response: EpochInfoResponse = response.json().await?;
+    Ok(response)
+}
+
+async fn get_blocks(end_block: u64,block_number: u64)->Result<Vec<BlockResponse>, Box<dyn Error>>{
+
     let mut responses = Vec::new();
 
     // Hard-code the latest block number here
-    let start_block = 58538963;
-    let block_number = 10;
+    //let start_block = 58538963;
+    //let block_number = 10;
 
     // Get block_number blocks from start_block
-    for i in start_block..(start_block+block_number) {
+    for i in (end_block-block_number)..end_block {
         let gist_body = json!({
             "jsonrpc": "2.0",
             "method": "getConfirmedBlock",
@@ -104,18 +137,43 @@ async fn get_block()->Result<Vec<BlockResponse>, Box<dyn Error>>{
             "id": 1
             });
 
-        let request_url = uri;
-
         // Call RPC
-        let response = call_rpc(uri,&gist_body).await?;
+        let response = call_rpc(&gist_body).await?;
+        //println!("getConfirmedBlock response: {:?}",&response.text().await);
 
         // Parse the response
-        let response: BlockResponse = response.json().await?;
+        let result = response.json().await;
 
-        // Push response to array of responses
-        responses.push(response);
+        let response: BlockResponse;
+        match result {
+            Ok(re) => {
+                response = re;
+                //println!("response: {:?}",response);
+                responses.push(response);
+            },
+            Err(error) => println!("Block: {}, Error: {:?}!",i,error),
+        }
+
     }
+
     Ok(responses)
+}
+
+async fn get_block(block_height: u64)->Result<BlockResponse, Box<dyn Error>>{
+    let gist_body = json!({
+        "jsonrpc": "2.0",
+        "method": "getConfirmedBlock",
+        "params": [block_height, "base64"],
+        "id": 1
+        });
+
+    // Call RPC
+    let response = call_rpc(&gist_body).await?;
+    //println!("getConfirmedBlock response: {:?}",&response.text().await);
+
+    // Parse the response
+    let result: BlockResponse = response.json().await?;
+    Ok(result)
 }
 
 fn get_account_from_string(line: &str) -> Option<TypeAccountPublicAddress>{
@@ -199,22 +257,51 @@ fn store_into_time_transaction(connection: &PgConnection, responses: Vec<BlockRe
 
 }
 
+// async fn get_record_and_store_time_transaction(current_block_height: u64) -> Result<(), Box<dyn Error>>{
+//     let response  = get_block(current_block_height).await?;
+//     println!("Current block: {:?}",response);
+//     store_into_time_transaction(&connection, Vec::from([response])).await?;
+//     Ok(())
+// }
+
 #[tokio::main]
 async fn main() ->  Result<(), Box<dyn Error>> {
-    // Connect to DB
+    /// Number of block before current block will be indexed
+    let block_number = 10;
+
+    /// Connect to DB
     let connection = establish_connection();
 
-    // Get block data
-    let responses = get_block().await?;
+    /// Get current epoch info
+    let epoch_info = get_current_epoch_info().await?;
+    let mut current_block_height = epoch_info.result.blockHeight;
 
-    // Get address from block data
-    // Todo: use these accounts infos
+    println!("block height: {}", current_block_height);
+
+
+    /// Get block_number block data before current time
+    // let responses = get_blocks(current_block_height,block_number).await?;
+    // store_into_time_transaction(&connection, responses);
+
+
+    /// Get block from current time
+    loop {
+        let response  = get_block(current_block_height).await?;
+        println!("Current block: {:?}",response);
+        store_into_time_transaction(&connection, Vec::from([response]));
+
+        current_block_height += 1;
+    }
+
+    /// Get address from block data
+    /// Todo: use these accounts infos
     // for response in responses {
     //     //print!("{:?}\n",response.result.transactions);
     //     let accounts_in_block = get_accounts_in_block(br: BlockResponse);
     // }
-    print!("{:?}",responses);
-    store_into_time_transaction(&connection, responses);
+    //print!("{:?}",responses);
+
+
 
     Ok(())
 }
