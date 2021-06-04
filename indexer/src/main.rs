@@ -13,7 +13,9 @@ use regex::Regex;
 //use tokio_postgres::{NoTls};
 use indexer::{establish_connection, create_record};
 use diesel::PgConnection;
-
+use std::time::Duration;
+use std::thread;
+use futures::future::try_join_all;
 
 type TypeTimeStamp = u128;
 type TypeBlockSlot = u128;
@@ -138,11 +140,11 @@ async fn get_blocks(end_block: u64,block_number: u64)->Result<Vec<BlockResponse>
             });
 
         // Call RPC
-        let response = call_rpc(&gist_body).await?;
-        //println!("getConfirmedBlock response: {:?}",&response.text().await);
+        let response_rpc = call_rpc(&gist_body).await?;
+        //println!("getConfirmedBlock response: {:?}",&response_rpc.text().await);
 
         // Parse the response
-        let result = response.json().await;
+        let result = response_rpc.json().await;
 
         let response: BlockResponse;
         match result {
@@ -257,12 +259,12 @@ fn store_into_time_transaction(connection: &PgConnection, responses: Vec<BlockRe
 
 }
 
-// async fn get_record_and_store_time_transaction(current_block_height: u64) -> Result<(), Box<dyn Error>>{
-//     let response  = get_block(current_block_height).await?;
-//     println!("Current block: {:?}",response);
-//     store_into_time_transaction(&connection, Vec::from([response])).await?;
-//     Ok(())
-// }
+async fn get_record_and_store_time_transaction(connection: &PgConnection,current_block_height: u64) -> Result<(), Box<dyn Error>>{
+    let response  = get_block(current_block_height).await?;
+    //println!("Current block: {:?}",response);
+    store_into_time_transaction(&connection, Vec::from([response]));
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() ->  Result<(), Box<dyn Error>> {
@@ -282,15 +284,37 @@ async fn main() ->  Result<(), Box<dyn Error>> {
     /// Get block_number block data before current time
     // let responses = get_blocks(current_block_height,block_number).await?;
     // store_into_time_transaction(&connection, responses);
-
-
+    let mut next_block_height = current_block_height;
+    let max_RPC_call = 10;
     /// Get block from current time
     loop {
-        let response  = get_block(current_block_height).await?;
-        println!("Current block: {:?}",response);
-        store_into_time_transaction(&connection, Vec::from([response]));
+        /// Get current block height
+        let epoch_info = get_current_epoch_info().await;
+        match epoch_info {
+            Ok(epoch_info) => current_block_height = epoch_info.result.blockHeight,
+            Err(error) => {
+                println!("Error cannot get epoch_info: {}",error);
+                continue;
+            },
+        }
 
-        current_block_height += 1;
+
+        /// Check if enough data is available
+        if next_block_height + max_RPC_call < current_block_height {
+            println!("Data available!");
+            let mut threads:Vec<_> = Vec::new();
+            for i in 0..max_RPC_call{
+                let thread = get_record_and_store_time_transaction(&connection, next_block_height);
+                threads.push(thread);
+                next_block_height += 1;
+            }
+            try_join_all(threads).await;
+        }
+        else{
+            println!("No new data!")
+        }
+        thread::sleep(Duration::from_millis(1000));
+
     }
 
     /// Get address from block data
