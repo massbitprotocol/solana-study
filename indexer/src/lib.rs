@@ -1,5 +1,6 @@
 pub mod schema;
 pub mod models;
+pub mod decode_solana;
 
 #[macro_use]
 extern crate diesel;
@@ -9,7 +10,7 @@ use diesel::prelude::*;
 use diesel::pg::PgConnection;
 use dotenv::dotenv;
 use std::env;
-use self::models::TimeTransaction;
+use self::models::SolanaBlockAggregate;
 
 pub fn establish_connection() -> PgConnection {
     dotenv().ok();
@@ -21,16 +22,19 @@ pub fn establish_connection() -> PgConnection {
 }
 
 
-pub fn create_record(conn: &PgConnection, block_number: u128, timestamp: u128, transaction_number: u128) -> TimeTransaction {
-    use schema::time_transaction;
+pub fn create_record(conn: &PgConnection, block_number: u128, timestamp: u128, transaction_number: u128, sol_transfer: u128, fee: u128) -> SolanaBlockAggregate {
+    use schema::solana_block_aggregate;
 
-    let new_record = TimeTransaction {
+    /// Todo: use all var in u128!
+    let new_record = SolanaBlockAggregate {
         block_number: block_number as i64,
         timestamp: timestamp as i64,
         transaction_number: transaction_number as i64,
+        sol_transfer: sol_transfer as i64,
+        fee: fee as i64,
     };
 
-    diesel::insert_into(time_transaction::table)
+    diesel::insert_into(solana_block_aggregate::table)
         .values(&new_record)
         .get_result(conn)
         .expect("Error saving new record")

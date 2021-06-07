@@ -11,18 +11,26 @@ use std::error::Error;
 use std::process::Command;
 use regex::Regex;
 //use tokio_postgres::{NoTls};
-use indexer::{establish_connection, create_record};
+use indexer::{establish_connection, create_record,};
 use diesel::PgConnection;
 use std::time::Duration;
 use std::thread;
 use futures::future::try_join_all;
+use indexer::decode_solana::{decode_transaction,decode_instruction_data,get_sol_transfer_in_transaction};
+use solana_sdk::{
+    transaction::Transaction,
+    pubkey::Pubkey,
+    system_instruction::SystemInstruction,
+    program_utils::limited_deserialize,
+};
+
 
 type TypeTimeStamp = u128;
 type TypeBlockSlot = u128;
 type TypeTokenUnit = u128;
 type TypeBlockHash = String;
 type TypeTransactionStatusOk = String;
-type TypeAccountPublicAddress = String;
+type TypeAccountPublicAddress = Pubkey;
 type TypeInnerInstructions = serde_json::Value;
 type TypeErr = Option<serde_json::Value>;
 type TypePostTokenBalances = serde_json::Value;
@@ -31,7 +39,7 @@ type TypePreTokenBalances = serde_json::Value;
 
 // Response of getBlock RPC
 #[derive(Deserialize, Debug)]
-struct BlockResponse {
+pub struct BlockResponse {
     id: u64,
     jsonrpc: String,
     result: BlockResult,
@@ -122,45 +130,6 @@ async fn get_current_epoch_info()->Result<EpochInfoResponse, Box<dyn Error>>{
     Ok(response)
 }
 
-async fn get_blocks(end_block: u64,block_number: u64)->Result<Vec<BlockResponse>, Box<dyn Error>>{
-
-    let mut responses = Vec::new();
-
-    // Hard-code the latest block number here
-    //let start_block = 58538963;
-    //let block_number = 10;
-
-    // Get block_number blocks from start_block
-    for i in (end_block-block_number)..end_block {
-        let gist_body = json!({
-            "jsonrpc": "2.0",
-            "method": "getConfirmedBlock",
-            "params": [i, "base64"],
-            "id": 1
-            });
-
-        // Call RPC
-        let response_rpc = call_rpc(&gist_body).await?;
-        //println!("getConfirmedBlock response: {:?}",&response_rpc.text().await);
-
-        // Parse the response
-        let result = response_rpc.json().await;
-
-        let response: BlockResponse;
-        match result {
-            Ok(re) => {
-                response = re;
-                //println!("response: {:?}",response);
-                responses.push(response);
-            },
-            Err(error) => println!("Block: {}, Error: {:?}!",i,error),
-        }
-
-    }
-
-    Ok(responses)
-}
-
 async fn get_block(block_height: u64)->Result<BlockResponse, Box<dyn Error>>{
     let gist_body = json!({
         "jsonrpc": "2.0",
@@ -178,57 +147,59 @@ async fn get_block(block_height: u64)->Result<BlockResponse, Box<dyn Error>>{
     Ok(result)
 }
 
-fn get_account_from_string(line: &str) -> Option<TypeAccountPublicAddress>{
-    // Example
-    // Account 0: srw- dv1LfzJvDF7S1fBKpFgKoKXK5yoSosmkAdfbxBo1GqJ (fee payer)
-    // Account 1: -rw- 5MMCR4NbTZqjthjLGywmeT66iwE9J9f7kjtxzJjwfUx2
-    let mut acc = None;
-    let re = Regex::new(r"Account \d+: [srwx-]{4} (\S+)").unwrap();
-    for cap in re.captures_iter(line) {
-        //println!("***Acc: {}\n", &cap[1]);
-        acc = Some(cap[1].to_string());
-    }
-    acc
+// fn get_account_from_string(line: &str) -> Option<TypeAccountPublicAddress>{
+//     // Example
+//     // Account 0: srw- dv1LfzJvDF7S1fBKpFgKoKXK5yoSosmkAdfbxBo1GqJ (fee payer)
+//     // Account 1: -rw- 5MMCR4NbTZqjthjLGywmeT66iwE9J9f7kjtxzJjwfUx2
+//     let mut acc = None;
+//     let re = Regex::new(r"Account \d+: [srwx-]{4} (\S+)").unwrap();
+//     for cap in re.captures_iter(line) {
+//         //println!("***Acc: {}\n", &cap[1]);
+//         acc = Some(cap[1].to_string());
+//     }
+//     acc
+//
+// }
 
+// fn get_accounts_from_encoded_transaction(encoded_transaction: &String, base_mode: &String)-> Vec<TypeAccountPublicAddress>{
+//     let mut accounts = Vec::new();
+//     //let encoded_transaction = "AfmhCkp72aPvZR5xdRUIVNqR76711XZvwx0fTQvrHVmpS+Cz9PByQTAT95BzN0Fe8oglreNP9QPac7iEZpNXKwcBAAMFCXTX0M+X39utFbKwA9FQQ4tt6jzejcK2FqmPryDOZ+1ApTNTQmIsWCfxeddcdNN1OYwAeR1nPurxgVFgOFiEkwan1RcZLwqvxvJl4/t3zHragsUp0L47E24tAFUgAAAABqfVFxjHdMkoVmOYaR1etoteuKObS21cc1VbIQAAAAAHYUgdNXR0u3xNdiTr072z2DVec9EQQ/wNo1OAAAAAALy4mTmcCr96b/vHCOUBuJ/6fHpQIyw8wous4pPg3B5wAQQEAQIDAD0CAAAAAQAAAAAAAADXHUIDAAAAACTEC3xYed21Qche1aM9Rn5KibhEE6ue0hDW5Uzy9s/eAdd5lmAAAAAA";
+//     // Run decode-transaction CLI for decode transaction
+//     let result = Command::new("solana")
+//         .arg("decode-transaction")
+//         .arg(encoded_transaction)
+//         .arg(base_mode)
+//         .output()
+//         .expect("ls command failed to start");
+//     let stdout = String::from_utf8_lossy(&result.stdout);
+//     print!("{}\n",&stdout);
+//     let stdout = stdout.split("\n");
+//
+//     //println!("status: {}", result.status);
+//
+//
+//     for s in stdout{
+//         //println!("stdout: {}", s);
+//         let acc = get_account_from_string(s);
+//
+//         match acc {
+//             Some(acc) => {
+//                 accounts.push(acc.clone());
+//             },
+//             None => (),
+//         }
+//     }
+//     accounts
+//     //print!("{:?}",accounts);
+//
+// }
+
+/// Using solana SDK for decode transaction
+fn get_accounts_from_encoded_transaction(encoded_transaction: &String, base_mode: &str)-> Vec<Pubkey> {
+    let transaction = decode_transaction(encoded_transaction,base_mode).unwrap();
+    transaction.message.account_keys
 }
 
-fn get_accounts_from_encoded_transaction(encoded_transaction: &String, base_mode: &String)-> Vec<TypeAccountPublicAddress>{
-    let mut accounts = Vec::new();
-    //let encoded_transaction = "AfmhCkp72aPvZR5xdRUIVNqR76711XZvwx0fTQvrHVmpS+Cz9PByQTAT95BzN0Fe8oglreNP9QPac7iEZpNXKwcBAAMFCXTX0M+X39utFbKwA9FQQ4tt6jzejcK2FqmPryDOZ+1ApTNTQmIsWCfxeddcdNN1OYwAeR1nPurxgVFgOFiEkwan1RcZLwqvxvJl4/t3zHragsUp0L47E24tAFUgAAAABqfVFxjHdMkoVmOYaR1etoteuKObS21cc1VbIQAAAAAHYUgdNXR0u3xNdiTr072z2DVec9EQQ/wNo1OAAAAAALy4mTmcCr96b/vHCOUBuJ/6fHpQIyw8wous4pPg3B5wAQQEAQIDAD0CAAAAAQAAAAAAAADXHUIDAAAAACTEC3xYed21Qche1aM9Rn5KibhEE6ue0hDW5Uzy9s/eAdd5lmAAAAAA";
-    // Run decode-transaction CLI for decode transaction
-    let result = Command::new("solana")
-        .arg("decode-transaction")
-        .arg(encoded_transaction)
-        .arg(base_mode)
-        .output()
-        .expect("ls command failed to start");
-    let stdout = String::from_utf8_lossy(&result.stdout);
-    print!("{}\n",&stdout);
-    let stdout = stdout.split("\n");
-
-    //println!("status: {}", result.status);
-
-
-    for s in stdout{
-        //println!("stdout: {}", s);
-        let acc = get_account_from_string(s);
-
-        match acc {
-            Some(acc) => {
-                accounts.push(acc.clone());
-            },
-            None => (),
-        }
-    }
-    accounts
-    //print!("{:?}",accounts);
-
-}
-
-fn store_time_transaction(connection: &PgConnection, block_number: u128, timestamp: TypeTimeStamp,transaction_number:u128){
-    let post = create_record(connection, block_number, timestamp, transaction_number);
-    println!("\nSaved record timestamp {} with transaction number {}", post.timestamp, post.transaction_number);
-}
 
 fn get_accounts_in_block(br: BlockResponse) -> Vec<Vec<TypeAccountPublicAddress>>{
     let transactions = br.result.transactions;
@@ -249,22 +220,83 @@ fn get_accounts_in_block(br: BlockResponse) -> Vec<Vec<TypeAccountPublicAddress>
     accounts_in_block
 }
 
-fn store_into_time_transaction(connection: &PgConnection, responses: Vec<BlockResponse>){
+// fn get_sol_transfer(block_response: BlockResponse) -> u128{
+//     let accounts = get_accounts_in_block(block_response).iter();
+//     let transactions = block_response.result.transactions.iter();
+//     let system_program_addr = "11111111111111111111111111111111";
+//     accounts
+//         .zip(transactions)
+//         .map(|(acc , trans)| {
+//             if acc.contains(system_program_addr){
+//                 trans.meta.postBalances[0]-
+//             }
+//         })
+//
+//     for transaction in block_response.result.transactions{
+//         transaction.transaction
+//     }
+//
+// }
+
+
+
+
+fn store_into_solana_block_aggregate(connection: &PgConnection, responses: Vec<BlockResponse>){
     for response in responses {
+        /// Prepare metrics
         let transaction_number = response.result.transactions.len();
         let timestamp = response.result.blockTime;
         let block_number = response.result.parentSlot + 1;
-        store_time_transaction(connection,block_number, timestamp,transaction_number as u128);
+        let sol_transfer= get_sol_transfer_in_block(&response);
+        println!("Sum sol transfer:{}",sol_transfer);
+        let fee = get_fee_in_block(&response);
+
+
+        let post = create_record(
+        connection,
+            block_number,
+            timestamp,
+            transaction_number as u128,
+            sol_transfer,
+            fee);
+        println!("\nSaved block {} timestamp {} with transaction number {}",post.block_number, post.timestamp, post.transaction_number);
     }
 
 }
 
-async fn get_record_and_store_time_transaction(connection: &PgConnection,current_block_height: u64) -> Result<(), Box<dyn Error>>{
+async fn get_record_and_store_solana_block_aggregate(connection: &PgConnection,current_block_height: u64) -> Result<(), Box<dyn Error>>{
     let response  = get_block(current_block_height).await?;
     //println!("Current block: {:?}",response);
-    store_into_time_transaction(&connection, Vec::from([response]));
+    store_into_solana_block_aggregate(&connection, Vec::from([response]));
     Ok(())
 }
+
+pub fn get_sol_transfer_in_block(response: &BlockResponse) -> u128{
+    /// Sum all sol in transactions
+    let mut sol_transfer = 0u128;
+    for transaction in &response.result.transactions{
+        let blob = &transaction.transaction[0];
+        let base_mode =  &transaction.transaction[1];
+        /// Decode transaction
+        let decoded_trans = decode_transaction(blob,base_mode);
+        if let Some(decoded_trans) = decoded_trans {
+            sol_transfer += get_sol_transfer_in_transaction(decoded_trans);
+        }
+    }
+
+    sol_transfer
+}
+
+pub fn get_fee_in_block(response: &BlockResponse) -> u128{
+    /// Sum all sol in transactions
+    let mut fee = 0u128;
+    for transaction in &response.result.transactions{
+        fee += transaction.meta.fee;
+    }
+
+    fee
+}
+
 
 #[tokio::main]
 async fn main() ->  Result<(), Box<dyn Error>> {
@@ -276,22 +308,29 @@ async fn main() ->  Result<(), Box<dyn Error>> {
 
     /// Get current epoch info
     let epoch_info = get_current_epoch_info().await?;
-    let mut current_block_height = epoch_info.result.blockHeight;
+    let mut current_block_height = epoch_info.result.absoluteSlot;
+
+    /// For debug only
+    // let mut current_block_height = 60422367;
+    // let response  = get_block(current_block_height).await.unwrap();
+    // store_into_solana_block_aggregate(&connection, Vec::from([response]));
+
 
     println!("block height: {}", current_block_height);
 
 
     /// Get block_number block data before current time
     // let responses = get_blocks(current_block_height,block_number).await?;
-    // store_into_time_transaction(&connection, responses);
+    // store_into_solana_block_aggregate(&connection, responses);
     let mut next_block_height = current_block_height;
-    let max_RPC_call = 10;
+    let max_RPC_call = 5;
+    let margin_call = 5;
     /// Get block from current time
     loop {
         /// Get current block height
         let epoch_info = get_current_epoch_info().await;
         match epoch_info {
-            Ok(epoch_info) => current_block_height = epoch_info.result.blockHeight,
+            Ok(epoch_info) => current_block_height = epoch_info.result.absoluteSlot,
             Err(error) => {
                 println!("Error cannot get epoch_info: {}",error);
                 continue;
@@ -300,11 +339,11 @@ async fn main() ->  Result<(), Box<dyn Error>> {
 
 
         /// Check if enough data is available
-        if next_block_height + max_RPC_call < current_block_height {
+        if next_block_height + max_RPC_call + margin_call < current_block_height{
             println!("Data available!");
             let mut threads:Vec<_> = Vec::new();
             for i in 0..max_RPC_call{
-                let thread = get_record_and_store_time_transaction(&connection, next_block_height);
+                let thread = get_record_and_store_solana_block_aggregate(&connection, next_block_height);
                 threads.push(thread);
                 next_block_height += 1;
             }
@@ -324,8 +363,6 @@ async fn main() ->  Result<(), Box<dyn Error>> {
     //     let accounts_in_block = get_accounts_in_block(br: BlockResponse);
     // }
     //print!("{:?}",responses);
-
-
 
     Ok(())
 }
