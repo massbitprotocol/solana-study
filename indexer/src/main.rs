@@ -116,7 +116,8 @@ struct Account {
 
 
 async fn call_rpc(gist_body: &Value)->Result<Response, Box<dyn Error>> {
-    let uri = "https://api.devnet.solana.com/";
+    //let uri = "https://api.devnet.solana.com/";
+    let uri = "https://api.mainnet-beta.solana.com/";
     let response = Client::new()
         .post(uri)
         .json(gist_body)
@@ -405,6 +406,7 @@ async fn main() ->  Result<(), Box<dyn Error>> {
     // let responses = get_blocks(current_block_height,block_number).await?;
     // store_into_solana_block(&connection, responses);
     let mut next_block_height = current_block_height;
+    let limit_single_RPC_per_10sec = 40;
     let max_RPC_call = 8;
     let margin_call = 1;
     /// Get block from current time
@@ -430,11 +432,14 @@ async fn main() ->  Result<(), Box<dyn Error>> {
                 next_block_height += 1;
             }
             try_join_all(threads).await;
+            /// To avoid limit single RPC call per 10 sec
+            thread::sleep(Duration::from_millis(10000/limit_single_RPC_per_10sec*max_RPC_call));
         }
         else{
-            println!("No new data!")
+            println!("No new data!");
+            thread::sleep(Duration::from_millis(200));
         }
-        thread::sleep(Duration::from_millis(1000));
+
 
     }
 
