@@ -41,6 +41,7 @@ pub fn decode_instruction_data(instruction: CompiledInstruction, account_keys: V
 }
 
 pub fn get_sol_transfer_in_transaction(transaction: Transaction) -> u128{
+    /// Todo: Check transaction is  success before add to result
     let mut sol_transfer = 0u128;
     let message = &transaction.message;
 

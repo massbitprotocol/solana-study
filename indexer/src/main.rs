@@ -11,7 +11,7 @@ use std::error::Error;
 use std::process::Command;
 use regex::Regex;
 //use tokio_postgres::{NoTls};
-use indexer::{establish_connection, create_record,};
+use indexer::{establish_connection, create_block_record,create_address_record,};
 use diesel::PgConnection;
 use std::time::Duration;
 use std::thread;
@@ -23,7 +23,8 @@ use solana_sdk::{
     system_instruction::SystemInstruction,
     program_utils::limited_deserialize,
 };
-
+//use indexer::schema::solana_address::columns::{is_new_create, address};
+use itertools::izip;
 
 type TypeTimeStamp = u128;
 type TypeBlockSlot = u128;
@@ -105,6 +106,14 @@ struct EpochInfo {
     slotsInEpoch: u64,
     transactionCount: u64
 }
+
+#[derive(Deserialize, Debug)]
+struct Account {
+    address: Pubkey,
+    balance: u64,
+    is_new_create: bool,
+}
+
 
 async fn call_rpc(gist_body: &Value)->Result<Response, Box<dyn Error>> {
     let uri = "https://api.devnet.solana.com/";
@@ -195,30 +204,30 @@ async fn get_block(block_height: u64)->Result<BlockResponse, Box<dyn Error>>{
 // }
 
 /// Using solana SDK for decode transaction
-fn get_accounts_from_encoded_transaction(encoded_transaction: &String, base_mode: &str)-> Vec<Pubkey> {
+fn get_address_from_encoded_transaction(encoded_transaction: &String, base_mode: &str) -> Vec<Pubkey> {
     let transaction = decode_transaction(encoded_transaction,base_mode).unwrap();
     transaction.message.account_keys
 }
 
 
-fn get_accounts_in_block(br: BlockResponse) -> Vec<Vec<TypeAccountPublicAddress>>{
-    let transactions = br.result.transactions;
-
-    let mut accounts_in_block = Vec::new();
-
-    // Each transaction
-    for transaction in transactions{
-        // Get encoded transaction and base mode
-        let encoded_transaction = &transaction.transaction[0];
-        let base_mode = &transaction.transaction[1];
-
-        // Get accounts for each transaction
-        let accounts = get_accounts_from_encoded_transaction(encoded_transaction,base_mode);
-        print!("{:?}\n",&accounts);
-        accounts_in_block.push(accounts);
-    }
-    accounts_in_block
-}
+// fn get_accounts_in_block(br: BlockResponse) -> Vec<Vec<TypeAccountPublicAddress>>{
+//     let transactions = br.result.transactions;
+//
+//     let mut accounts_in_block = Vec::new();
+//
+//     // Each transaction
+//     for transaction in transactions{
+//         // Get encoded transaction and base mode
+//         let encoded_transaction = &transaction.transaction[0];
+//         let base_mode = &transaction.transaction[1];
+//
+//         // Get accounts for each transaction
+//         let accounts = get_accounts_from_encoded_transaction(encoded_transaction,base_mode);
+//         print!("{:?}\n",&accounts);
+//         accounts_in_block.push(accounts);
+//     }
+//     accounts_in_block
+// }
 
 // fn get_sol_transfer(block_response: BlockResponse) -> u128{
 //     let accounts = get_accounts_in_block(block_response).iter();
@@ -241,7 +250,7 @@ fn get_accounts_in_block(br: BlockResponse) -> Vec<Vec<TypeAccountPublicAddress>
 
 
 
-fn store_into_solana_block_aggregate(connection: &PgConnection, responses: Vec<BlockResponse>){
+fn store_into_solana_block(connection: &PgConnection, responses: &Vec<BlockResponse>){
     for response in responses {
         /// Prepare metrics
         let transaction_number = response.result.transactions.len();
@@ -252,7 +261,7 @@ fn store_into_solana_block_aggregate(connection: &PgConnection, responses: Vec<B
         let fee = get_fee_in_block(&response);
 
 
-        let post = create_record(
+        let post = create_block_record(
         connection,
             block_number,
             timestamp,
@@ -264,10 +273,83 @@ fn store_into_solana_block_aggregate(connection: &PgConnection, responses: Vec<B
 
 }
 
-async fn get_record_and_store_solana_block_aggregate(connection: &PgConnection,current_block_height: u64) -> Result<(), Box<dyn Error>>{
+fn get_accounts_from_encoded_transaction(encoded_transaction: &String, base_mode: &str, postBalances: &Vec<TypeTokenUnit>, preBalances: &Vec<TypeTokenUnit>) -> Vec<Account>{
+    let mut accounts = Vec::new();
+    let transaction = decode_transaction(encoded_transaction,base_mode).unwrap();
+    let addresses = transaction.message.account_keys;
+    for (address,post_balance,pre_balance) in izip!(addresses,postBalances,preBalances){
+        let is_new_create = (*pre_balance == 0u128);
+        let account = Account{
+            address,
+            balance: *post_balance as u64,
+            is_new_create,
+        };
+        accounts.push(account);
+    }
+
+    accounts
+}
+
+fn get_accounts_in_block(br: &BlockResponse) -> Vec<Vec<Account>>{
+    let transactions = &br.result.transactions;
+
+    let mut accounts_in_block = Vec::new();
+
+    // Each transaction
+    for transaction in transactions{
+        // Get encoded transaction and base mode
+        let encoded_transaction = &transaction.transaction[0];
+        let base_mode = &transaction.transaction[1];
+        let postBalances = &transaction.meta.postBalances;
+        let preBalances = &transaction.meta.preBalances;
+
+        // Get accounts for each transaction
+        let accounts = get_accounts_from_encoded_transaction(encoded_transaction, base_mode,postBalances,preBalances);
+        print!("{:?}\n",&accounts);
+        accounts_in_block.push(accounts);
+    }
+    accounts_in_block
+}
+
+fn store_into_solana_address(connection: &PgConnection, responses: &Vec<BlockResponse>){
+    for response in responses {
+        /// Prepare metrics
+        let timestamp = response.result.blockTime;
+        let block_number = response.result.parentSlot + 1;
+        let accounts_in_block = get_accounts_in_block(response);
+        for accounts_in_transaction in accounts_in_block{
+            for account in accounts_in_transaction{
+                let address = "".to_string();
+
+                let post = create_address_record(
+                    connection,
+                    block_number,
+                    timestamp,
+                    &account.address.to_string(),
+                    account.is_new_create,
+                    account.balance as u128);
+                println!("\nSaved block {} timestamp {} with address {}, balance {}, is_new {}",
+                         block_number,
+                         timestamp,
+                         &account.address.to_string(),
+                         account.balance,
+                         account.is_new_create
+                );
+            }
+        }
+
+
+    }
+
+}
+
+
+async fn get_record_and_store_solana_db(connection: &PgConnection, current_block_height: u64) -> Result<(), Box<dyn Error>>{
     let response  = get_block(current_block_height).await?;
     //println!("Current block: {:?}",response);
-    store_into_solana_block_aggregate(&connection, Vec::from([response]));
+    let responses = Vec::from([response]);
+    store_into_solana_block(&connection, &responses);
+    store_into_solana_address(&connection, &responses);
     Ok(())
 }
 
@@ -313,7 +395,7 @@ async fn main() ->  Result<(), Box<dyn Error>> {
     /// For debug only
     // let mut current_block_height = 60422367;
     // let response  = get_block(current_block_height).await.unwrap();
-    // store_into_solana_block_aggregate(&connection, Vec::from([response]));
+    // store_into_solana_block(&connection, Vec::from([response]));
 
 
     println!("block height: {}", current_block_height);
@@ -321,10 +403,10 @@ async fn main() ->  Result<(), Box<dyn Error>> {
 
     /// Get block_number block data before current time
     // let responses = get_blocks(current_block_height,block_number).await?;
-    // store_into_solana_block_aggregate(&connection, responses);
+    // store_into_solana_block(&connection, responses);
     let mut next_block_height = current_block_height;
-    let max_RPC_call = 5;
-    let margin_call = 5;
+    let max_RPC_call = 8;
+    let margin_call = 1;
     /// Get block from current time
     loop {
         /// Get current block height
@@ -340,10 +422,10 @@ async fn main() ->  Result<(), Box<dyn Error>> {
 
         /// Check if enough data is available
         if next_block_height + max_RPC_call + margin_call < current_block_height{
-            println!("Data available!");
+            println!("Data available! Indexed block {}, on-chain confirmed block {}",next_block_height,current_block_height);
             let mut threads:Vec<_> = Vec::new();
             for i in 0..max_RPC_call{
-                let thread = get_record_and_store_solana_block_aggregate(&connection, next_block_height);
+                let thread = get_record_and_store_solana_db(&connection, next_block_height);
                 threads.push(thread);
                 next_block_height += 1;
             }

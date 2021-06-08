@@ -1,1 +1,0 @@
-DROP TABLE solana_block_aggregate
