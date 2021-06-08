@@ -406,7 +406,6 @@ async fn main() ->  Result<(), Box<dyn Error>> {
     // let responses = get_blocks(current_block_height,block_number).await?;
     // store_into_solana_block(&connection, responses);
     let mut next_block_height = current_block_height;
-    let
     let limit_single_RPC_per_10sec = 40;
     let max_RPC_call = 8;
     let margin_call = 1;
