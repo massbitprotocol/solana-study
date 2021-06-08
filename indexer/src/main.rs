@@ -406,6 +406,7 @@ async fn main() ->  Result<(), Box<dyn Error>> {
     // let responses = get_blocks(current_block_height,block_number).await?;
     // store_into_solana_block(&connection, responses);
     let mut next_block_height = current_block_height;
+    let
     let limit_single_RPC_per_10sec = 40;
     let max_RPC_call = 8;
     let margin_call = 1;
@@ -433,11 +434,11 @@ async fn main() ->  Result<(), Box<dyn Error>> {
             }
             try_join_all(threads).await;
             /// To avoid limit single RPC call per 10 sec
-            thread::sleep(Duration::from_millis(10000/limit_single_RPC_per_10sec*max_RPC_call));
+            thread::sleep(Duration::from_millis((10000+1000)/limit_single_RPC_per_10sec*max_RPC_call));
         }
         else{
             println!("No new data!");
-            thread::sleep(Duration::from_millis(200));
+            thread::sleep(Duration::from_millis(300));
         }
 
 
