@@ -12,5 +12,5 @@ diesel migration redo
 ```
 # Create DB
 ```
-diesel migration redo
+diesel migration run
 ```

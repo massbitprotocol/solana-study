@@ -1,29 +1,33 @@
-pub mod schema;
-pub mod models;
 pub mod decode_solana;
+pub mod models;
+pub mod schema;
 
 #[macro_use]
 extern crate diesel;
 extern crate dotenv;
 
-use diesel::prelude::*;
+use self::models::SolanaAddress;
+use self::models::SolanaBlock;
 use diesel::pg::PgConnection;
+use diesel::prelude::*;
 use dotenv::dotenv;
 use std::env;
-use self::models::SolanaBlock;
-use self::models::SolanaAddress;
 
 pub fn establish_connection() -> PgConnection {
     dotenv().ok();
 
-    let database_url = env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set");
-    PgConnection::establish(&database_url)
-        .expect(&format!("Error connecting to {}", database_url))
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    PgConnection::establish(&database_url).expect(&format!("Error connecting to {}", database_url))
 }
 
-
-pub fn create_block_record(conn: &PgConnection, block_number: u128, timestamp: u128, transaction_number: u128, sol_transfer: u128, fee: u128) -> SolanaBlock {
+pub fn create_block_record(
+    conn: &PgConnection,
+    block_number: u128,
+    timestamp: u128,
+    transaction_number: u128,
+    sol_transfer: u128,
+    fee: i128,
+) -> SolanaBlock {
     use schema::solana_block;
 
     /// Todo: use all var in u128!
@@ -41,7 +45,14 @@ pub fn create_block_record(conn: &PgConnection, block_number: u128, timestamp: u
         .expect("Error saving new record")
 }
 
-pub fn create_address_record<'a>(conn: &PgConnection, block_number: u128, timestamp: u128, address: &'a str, is_new_create: bool, balance: u128) -> usize {
+pub fn create_address_record<'a>(
+    conn: &PgConnection,
+    block_number: u128,
+    timestamp: u128,
+    address: &'a str,
+    is_new_create: bool,
+    balance: u128,
+) -> usize {
     use schema::solana_address;
 
     /// Todo: use all var in u128!
