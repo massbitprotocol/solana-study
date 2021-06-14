@@ -174,18 +174,18 @@ async fn get_block(block_height: u64) -> Result<BlockResponse, Box<dyn Error>> {
     });
 
     // Call RPC
-    let response = call_rpc(&gist_body).await?.text().await?;
+    let response_text = call_rpc(&gist_body).await?.text().await?;
 
-    if !is_rpc_response_error(&response) {
-        let response = serde_json::from_str(&response).expect(
+    if !is_rpc_response_error(&response_text) {
+        let response = serde_json::from_str(&response_text).expect(
             &(format!(
-                "Block JSON was not well-formatted, block_height: {:?}",
-                block_height
+                "Block JSON was not well-formatted, block_height: {:?},Block content: {}",
+                block_height, response_text
             )),
         );
         Ok(response)
     } else {
-        Err(format!("Cannot parse response getConfirmedBlock: {}", response).into())
+        Err(format!("Cannot parse response getConfirmedBlock: {}", response_text).into())
     }
 }
 
@@ -438,7 +438,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut current_block_height = epoch_info.result.absoluteSlot;
 
     //For debug only
-    //let mut current_block_height = 82356128;
+    //let mut current_block_height = 82367546;
 
     /// For debug only
     // let mut current_block_height = 60422367;
@@ -452,7 +452,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // store_into_solana_block(&connection, responses);
     let mut next_block_height = current_block_height;
     let limit_single_RPC_per_10sec = 40;
-    let max_RPC_call = 10;
+    let max_RPC_call = 2;
     let margin_call = 1;
     /// Get block from current time
     loop {
@@ -482,6 +482,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             try_join_all(threads).await;
             /// To avoid limit single RPC call per 10 sec
+            let sleep_time_ms = (10000 + 1000) / limit_single_RPC_per_10sec * max_RPC_call;
+            println!("Sleep for {}ms", sleep_time_ms);
             thread::sleep(Duration::from_millis(
                 (10000 + 1000) / limit_single_RPC_per_10sec * max_RPC_call,
             ));
